@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>星门输入法预览</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { background:#0b0c2a; color:#fff; text-align:center; font-family:"Microsoft YaHei"; margin:0; padding:20px; }
+    h2 { margin-bottom:10px; }
+    #keyboard { display:flex; flex-wrap:wrap; justify-content:center; margin-top:20px; }
+    .char-btn {
+      background:#f0c000; color:#000; border:none; border-radius:8px;
+      padding:12px; margin:6px; font-size:18px; min-width:60px; cursor:pointer;
+      box-shadow:0 0 8px #f0c00066; transition:transform 0.1s ease;
+    }
+    .char-btn:hover { transform:scale(1.05); }
+    #inputBox { margin-top:20px; padding:10px; width:90%; font-size:16px; border-radius:8px; border:none; }
+    #backBtn { margin-top:20px; padding:8px 14px; background:#007bff; color:#fff; border:none; border-radius:6px; }
+  </style>
+</head>
+<body>
+  <h2>🌠 星门语言输入法预览</h2>
+  <p>点击下方字符以插入输入框</p>
+  <input type="text" id="inputBox" placeholder="在这里试输入..." />
+  <div id="keyboard"></div>
+  <button id="backBtn" onclick="window.location.href='auto-save-draw.html'">返回造字页面</button>
+
+  <script src="render.js"></script>
+  <script>
+  window.addEventListener("DOMContentLoaded", () => {
+    const data = localStorage.getItem("stargate_chars");
+    if (!data) {
+      alert("未检测到字符数据，请先造字！");
+      return;
+    }
+    const parsed = JSON.parse(data);
+    if (typeof renderChars === "function") {
+      renderChars(parsed);
+    } else {
+      console.error("render.js 未加载！");
+    }
+  });
+  </script>
+</body>
+</html>
