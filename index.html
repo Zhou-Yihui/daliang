@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>大凉语输入法安全版</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"/>
+<style>
+:root{--theme:#7c4dff;--bg:#121212;--key:#1e1e1e;--text:#fff;--border:rgba(255,255,255,.15)}
+*{box-sizing:border-box;font-family:Roboto,Helvetica Neue,PingFang SC}
+body{margin:0;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden;/* 防止页面整体滚动导致遮挡 */}
+header{height:48px;background:var(--theme);display:flex;align-items:center;padding:0 12px;font-weight:bold;z-index:10;/* 确保标题栏不被覆盖 */}
+main{flex:1;display:flex;flex-direction:column;overflow:hidden;/* 主区域不滚动 */}
+#screen{flex:1;padding:12px;font-size:24px;background:#000;border:1px solid var(--border);overflow-y:auto;white-space:pre-wrap;word-break:break-all;min-height:80px;/* 确保输入框有基础高度 */}
+#toolbar{height:42px;display:flex;align-items:center;padding:0 8px;border-bottom:1px solid var(--border);z-index:5;}
+#toolbar button{margin-left:auto;height:32px;border:none;border-radius:4px;background:var(--theme);color:#fff;padding:0 12px;cursor:pointer;}
+#candidate{height:46px;display:flex;align-items:center;padding:0 8px;border-bottom:1px solid var(--border);overflow-x:auto;z-index:5;}
+.cand-char{height:36px;margin:0 4px;border:1px solid var(--border);border-radius:4px;background:var(--key);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;}
+.cand-char img{height:32px;width:auto;pointer-events:none;}
+/* 修复：键盘容器确保显示，固定高度不折叠 */
+#keyboard{height:260px;display:flex;flex-direction:column;background:var(--key);z-index:5;}
+.row{display:flex;flex:1;}
+.key{flex:1;margin:3px;border-radius:6px;background:#2a2a2a;display:flex;align-items:center;justify-content:center;font-size:18px;cursor:pointer;transition:background .1s;}
+.key:active{background:var(--theme);}
+.key.fn{font-size:14px;background:#333;}
+/* 修复：手绘面板独立层，避免与主界面冲突 */
+#drawPanel{position:fixed;top:0;left:0;right:0;bottom:0;background:#000;display:flex;flex-direction:column;z-index:1000;/* 最高层级，确保显示在最上层 */}
+#drawTop{height:auto;background:var(--theme);display:flex;flex-direction:column;gap:8px;padding:15px 12px;/* 足够顶部间距，避开地址栏 */border-radius:0 0 8px 8px;}
+#drawTop .operate-area{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+#latinIn{height:38px;padding:0 10px;border:none;border-radius:4px;flex:1;min-width:120px;font-size:16px;outline:none;/* 去除聚焦边框，优化视觉 */}
+#drawCanvas{flex:1;background:#000;cursor:crosshair;margin:10px;border:1px solid var(--border);}
+#drawTools{padding:8px;display:flex;gap:8px;flex-wrap:wrap;justify-content:center;}
+.btn{background:var(--theme);border:0;color:#fff;padding:8px 14px;border-radius:4px;cursor:pointer;white-space:nowrap;}
+#localSaveBtn{background:#4CAF50;}
+input[type=file]{display:none;}
+label.btn{display:inline-block;}
+#status{position:fixed;bottom:4px;left:50%;transform:translateX(-50%);background:#000;border:1px solid var(--border);padding:4px 12px;border-radius:12px;font-size:12px;color:var(--theme);z-index:20;}
+/* 重载按钮层级调整 */
+.reload-btn{position:fixed;bottom:60px;right:8px;height:32px;border:none;border-radius:4px;background:var(--theme);color:#fff;cursor:pointer;z-index:20;}
+</style>
+</head>
+<body>
+<header>大凉语输入法安全版</header>
+
+<main>
+  <div id="screen" contenteditable="true" placeholder="点这里输入…"></div>
+  <div id="toolbar">
+    <span>候选</span>
+    <button onclick="openDraw()">✍️ 绘制新字符</button>
+  </div>
+  <div id="candidate"></div>
+  <div id="keyboard"></div>
+</main>
+
+<!-- 手绘面板：结构简化，确保点击事件正常 -->
+<div id="drawPanel" style="display: none;">
+  <div id="drawTop">
+    <span style="font-weight:bold;font-size:16px;">绘制新字符</span>
+    <div class="operate-area">
+      <input id="latinIn" placeholder="对应拉丁字母" maxlength="20"/>
+      <button class="btn" id="saveBtn" onclick="saveGlyph()">上传GitHub</button>
+      <button class="btn" id="localSaveBtn" onclick="saveGlyphLocally()">本地保存</button>
+      <button class="btn" onclick="closeDraw()">关闭</button>
+    </div>
+  </div>
+  <canvas id="drawCanvas"></canvas>
+  <div id="drawTools">
+    <label class="btn">笔宽<input type="range" id="brushW" min="2" max="40" value="6"></label>
+    <button class="btn" onclick="toogleEraser()">橡皮擦</button>
+    <button class="btn" onclick="clearDraw()">清屏</button>
+    <button class="btn" onclick="undoStroke()">撤销</button>
+    <label class="btn">上传底图<input type="file" id="bgFile" accept="image/*"></label>
+  </div>
+</div>
+
+<span id="status">就绪</span>
+<!-- 修复：按钮添加ID，避免样式冲突导致点击无效 -->
+<button class="reload-btn" onclick="location.reload()">🔄 重载字符</button>
+
+<script>
+/***************  配置  ****************/
+const owner='Zhou-Yihui';   // 仅修改此处
+const repo='daliang';
+let token=localStorage.getItem('gtoken');
+if(!token){
+  // 修复：prompt弹出时机调整，避免阻塞初始化
+  setTimeout(()=>{
+    token=prompt('GitHub Personal Access Token（仅本地存储，永不进源码）');
+    if(token)localStorage.setItem('gtoken',token);
+  },500);
+}
+
+/***************  全局变量  ****************/
+let layout='qwerty';
+let shift=false;
+let charTable={};
+let imgBg=null;
+let strokes=[],currStr=[];
+let isDraw=false,isErase=false;
+let drawCtx=null,canvas=null;
+const LOCAL_CHAR_KEY='daliang_char_table';
+
+/***************  初始化：确保键盘和绘制功能优先加载  ****************/
+window.onload=()=>{
+  // 1. 优先初始化键盘（解决键盘不显示问题）
+  renderKB();
+  // 2. 初始化手绘面板
+  canvas=document.getElementById('drawCanvas');
+  if(canvas){
+    drawCtx=canvas.getContext('2d');
+    resizeCanvas();
+    window.addEventListener('resize',resizeCanvas);
+    bindDrawEvents();
+  }
+  // 3. 加载字符表（不阻塞UI）
+  loadLocalTable();
+  setTimeout(()=>{
+    loadRemoteTable().then(()=>{
+      bindIME();
+      status('初始化完成');
+    });
+  },300);
+};
+
+// 修复：画布尺寸计算，避免依赖未加载元素
+function resizeCanvas(){
+  if(!canvas)return;
+  const panel=document.getElementById('drawPanel');
+  if(!panel)return;
+  // 计算可用高度：面板高度 - 顶部栏高度 - 工具区高度 - 边距
+  const topHeight=document.getElementById('drawTop').offsetHeight;
+  const toolsHeight=document.getElementById('drawTools').offsetHeight;
+  canvas.width=panel.clientWidth - 20; // 左右各10px边距
+  canvas.height=panel.clientHeight - topHeight - toolsHeight - 30; // 上下预留30px
+  // 重新绘制底图（如果有）
+  if(imgBg){
+    drawCtx.drawImage(imgBg,0,0,canvas.width,canvas.height);
+    redrawStrokes(); // 重绘画笔轨迹
+  }
+}
+
+/***************  GitHub API  ****************/
+async function gh(method,path,body){
+  if(!token)throw new Error('请先输入GitHub Token');
+  try{
+    const res=await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`,{
+      method,
+      headers:{
+        'Authorization':`token ${token}`,
+        'Content-Type':'application/json',
+        'Accept':'application/vnd.github.v3+json' // 兼容GitHub API
+      },
+      body:body?JSON.stringify(body):undefined,
+      timeout:10000 // 超时时间，避免长期阻塞
+    });
+    if(!res.ok){
+      const err=await res.text();
+      throw new Error(`API错误: ${res.status} - ${err}`);
+    }
+    return res.json();
+  }catch(e){
+    throw new Error(`网络/API问题: ${e.message}`);
+  }
+}
+
+async function loadRemoteTable(){
+  status('同步远程字符表…');
+  try{
+    const {content}=await gh('GET','table.json');
+    const remoteTable=JSON.parse(atob(content));
+    // 合并远程表（去重）
+    for(const [latin, chars] of Object.entries(remoteTable)){
+      if(!charTable[latin])charTable[latin]=[];
+      const existingUrls=charTable[latin[lmap(c=>c.url);
+      const newChars=chars.filter(c=>!existingUrls.includes(c.url));
+      charTable[latin]=[...charTable[latin],...newChars];
+    }
+    saveLocalTable();
+    status('远程同步完成');
+  }catch(e){
+    if(e.message.includes('Not Found')){
+      status('远程无表，使用本地表');
+    }else{
+      status(`同步失败: ${e.message.slice(0,20)}`);
+    }
+  }
+}
+
+async function pushToGit(path,content,message){
+  let sha=null;
+  try{
+    // 先查询是否存在该文件
+    const res=await gh('GET',path);
+    sha=res.sha;
+  }catch(e){
+    if(!e.message.includes('Not Found'))throw e;
+  }
+  // 上传文件
+  return gh('PUT',path,{
+    message:message||`update ${path}`,
+    content:btoa(typeof content==='string'?content:JSON.stringify(content)),
+    sha,
+    branch:'main' // 明确分支，避免默认分支问题
+  });
+}
+
+/***************  本地字符表操作  ****************/
+function loadLocalTable(){
+  status('加载本地字符表…');
+  try{
+    const localData=localStorage.getItem(LOCAL_CHAR_KEY);
+    if(localData)charTable=JSON.parse(localData);
+    status('本地表加载完成');
+  }catch(e){
+    status('本地表损坏，新建');
+    charTable={};
+    saveLocalTable();
+  }
+}
+
+function saveLocalTable(){
+  try{
+    localStorage.setItem(LOCAL_CHAR_KEY,JSON.stringify(charTable));
+  }catch(e){
+    status(`本地保存失败: ${e.message.slice(0,15)}`);
+  }
+}
+
+// 本地保存字符（不上传GitHub）
+function saveGlyphLocally(){
+  const latin=document.getElementById('latinIn').value.trim().toLowerCase();
+  if(!latin){
+    alert('请输入拉丁键（如a、b）');
+    return;
+  }
+  if(!strokes.length){
+    alert('请先绘制字符');
+    return;
+  }
+
+  try{
+    // 生成图片并下载
+    canvas.toBlob(blob=>{
+      if(!blob)throw new Error('生成图片失败');
+      // 1. 下载图片到本地
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=url;
+      a.download=`daliang_${latin}_${Date.now()}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      // 2. 保存到本地字符表
+      if(!charTable[latin])charTable[latin]=[];
+      const newRec={
+        url:url,
+        type:'local',
+        timestamp:Date.now()
+      };
+      charTable[latin[lpush(newRec);
+      saveLocalTable();
+      insertLocalCand(newRec);
+
+      status('✅ 本地保存成功');
+      clearDraw();
+      document.getElementById('latinIn').value='';
+    });
+  }catch(e){
+    status(`本地保存失败: ${e.message}`);
+    alert(`保存失败：${e.message}`);
+  }
+}
+
+/***************  手绘功能  ****************/
+function bindDrawEvents(){
+  if(!canvas)return;
+
+  // 鼠标/触摸事件统一处理
+  const startDraw=(x,y)=>{
+    isDraw=true;
+    currStr=[{x,y}];
+    drawCtx.beginPath();
+    drawCtx.moveTo(x,y);
+  };
+
+  const moveDraw=(x,y)=>{
+    if(!isDraw)return;
+    const brushW=document.getElementById('brushW').value;
+    // 设置画笔/橡皮擦属性
+    drawCtx.lineWidth=isErase?brushW*2:brushW;
+    drawCtx.globalCompositeOperation=isErase?'destination-out':'source-over';
+    drawCtx.strokeStyle='#fff';
+    drawCtx.lineCap='round'; // 笔触圆润
+    drawCtx.lineTo(x,y);
+    drawCtx.stroke();
+    currStr.push({x,y});
+  };
+
+  const endDraw=()=>{
+    if(isDraw&&currStr.length){
+      strokes.push([...currStr]);
+    }
+    isDraw=false;
+  };
+
+  // 鼠标事件
+  canvas.addEventListener('mousedown',e=>{
+    const {x,y}=getXY(e);
+    startDraw(x,y);
+  });
+  canvas.addEventListener('mousemove',e=>{
+    const {x,y}=getXY(e);
+    moveDraw(x,y);
+  });
+  canvas.addEventListener('mouseup',endDraw);
+  canvas.addEventListener('mouseout',endDraw);
+
+  // 触摸事件（移动端）
+  canvas.addEventListener('touchstart',e=>{
+    e.preventDefault(); // 阻止默认滚动
+    const touch=e.touches[0];
+    const {x,y}=getXY(touch);
+    startDraw(x,y);
+  });
+  canvas.addEventListener('touchmove',e=>{
+    e.preventDefault();
+    const touch=e.touches[0];
+    const {x,y}=getXY(touch);
+    moveDraw(x,y);
+  });
+  canvas.addEventListener('touchend',endDraw);
+  canvas.addEventListener('touchcancel',endDraw);
+
+  // 底图上传
+  document.getElementById('bgFile').addEventListener('change',e=>{
+    const file=e.target.files[0];
+    if(!file)return;
+    const reader=new FileReader();
+    reader.onload=function(e){
+      imgBg=new Image();
+      imgBg.onload=function(){
+        resizeCanvas(); // 重新调整画布并绘制底图
+      };
+      imgBg.src=e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// 修复：获取正确的画布内坐标
+function getXY(e){
+  const rect=canvas.getBoundingClientRect();
+  return{
+    x:e.clientX - rect.left,
+    y:e.clientY - rect.top
+  };
+}
+
+function clearDraw(){
+  if(!drawCtx)return;
+  drawCtx.clearRect(0,0,canvas.width,canvas.height);
+  if(imgBg){
+    drawCtx.drawImage(imgBg,0,0,canvas.width,canvas.height);
+  }
+  strokes=[];
+}
+
+function undoStroke(){
+  if(strokes.length){
+    strokes.pop();
+    clearDraw();
+    redrawStrokes();
+  }else{
+    status('无历史轨迹可撤销');
+  }
+}
+
+function redrawStrokes(){
+  if(!drawCtx||!strokes.length)return;
+  drawCtx.save();
+  drawCtx.strokeStyle='#fff';
+  drawCtx.lineWidth=document.getElementById('brushW').value;
+  drawCtx.lineCap='round';
+  strokes.forEach(s=>{
+    if(s.length){
+      drawCtx.beginPath();
+      drawCtx.moveTo(s[0].x,s[0].y);
+      s.forEach(p=>drawCtx.lineTo(p.x,p.y));
+      drawCtx.stroke();
+    }
+  });
+  drawCtx.restore();
+}
+
+function toogleEraser(){
+  isErase=!isErase;
+  status(isErase?'橡皮擦模式':'绘制模式');
+}
+
+// 修复：确保绘制面板能正常显示/隐藏
+function openDraw(){
+  const panel=document.getElementById('drawPanel');
+  if(panel)panel.style.display='flex';
+  setTimeout(resizeCanvas,100); // 延迟调整画布，确保面板已渲染
+}
+
+function closeDraw(){
+  const panel=document.getElementById('drawPanel');
+  if(panel)panel.style.display='none';
+}
+
+/***************  上传GitHub功能  ****************/
+async function saveGlyph(){
+  const latin=document.getElementById('latinIn').value.trim().toLowerCase();
+  if(!latin){
+    alert('请输入拉丁键（如a、b）');
+    return;
+  }
+  if(!strokes.length){
+    alert('请先绘制字符');
+    return;
+  }
+  const btn=document.getElementById('saveBtn');
+  btn.disabled=true;
+  btn.textContent='上传中…';
+
+  try{
+    // 1. 生成图片Base64
+    const blob=await new Promise((res)=>{
+      canvas.toBlob(res,'image/png',0.9);
+    });
+    const base64=await new Promise((r)=>{
+      const reader=new FileReader();
+      reader.onload=()=>r(reader.result.split(',')[1]);
+      reader.readAsDataURL(blob);
+    });
+
+    // 2. 上传图片到GitHub
+    const filename=`chars/${latin}_${Date.now()}.png`;
+    await pushToGit(filename,base64,`add char: ${latin}`);
+
+    // 3. 更新字符表
+    if(!charTable[latin])charTable[latin]=[];
+    const newRec={
+      url:`https://raw.githubusercontent.com/${owner}/${repo}/main/${filename}`,
+      mirrorUrl:`https://github.moeyy.xyz/https://raw.githubusercontent.com/${owner}/${repo}/main/${filename}`,
+      filename,
+      type:'remote'
+    };
+    charTable[latin[lpush(newRec);
+
+    // 4. 上传更新后的字符表
+    await pushToGit('table.json',JSON.stringify(charTable,null,2),`update table for ${latin}`);
+
+    // 5. 本地生效
+    saveLocalTable();
+    insertLocalCand({...newRec, url:newRec.mirrorUrl});
+
+    status('✅ 上传成功！');
+    clearDraw();
+    document.getElementById('latinIn').value='';
+    closeDraw();
+  }catch(e){
+    const errMsg=e.message.length>30?e.message.slice(0,30)+'...':e.message;
+    status(`上传失败: ${errMsg}`);
+    alert(`上传失败：${e.message}`);
+  }finally{
+    btn.disabled=false;
+    btn.textContent='上传GitHub';
+  }
+}
+
+/***************  候选栏操作  ****************/
+function insertLocalCand(rec){
+  const box=document.getElementById('candidate');
+  if(!box)return;
+
+  const div=document.createElement('div');
+  div.className='cand-char';
+
+  const img=new Image();
+  img.src=rec.url;
+  img.style.height='32px';
+  // 图片加载失败降级
+  img.onerror=()=>{
+    if(rec.mirrorUrl){
+      img.src=rec.mirrorUrl;
+    }else{
+      div.textContent=rec.url.split('/').pop().slice(0,2);
+      div.style.fontSize='12px';
+      div.style.color='#ccc';
+    }
+  };
+  div.appendChild(img);
+
+  // 点击插入输入框
+  div.onclick=()=>{
+    const scr=document.getElementById('screen');
+    const container=document.createElement('span');
+    container.style.display='inline-block';
+    container.style.verticalAlign='middle';
+
+    const charImg=new Image();
+    charImg.src=rec.mirrorUrl||rec.url;
+    charImg.style.height='1em';
+    charImg.onerror=()=>{
+      container.textContent=`[${rec.url.split('/').pop().slice(0,2)}]`;
+      container.style.color='#ccc';
+    };
+    container.appendChild(charImg);
+    scr.appendChild(container);
+    scr.appendChild(document.createTextNode(' '));
+  };
+  box.appendChild(div);
+}
+
+/***************  键盘功能  ****************/
+const LAYOUTS={
+  qwerty:[
+    ['q','w','e','r','t','y','u','i','o','p'],
+    ['a','s','d','f','g','h','j','k','l'],
+    ['⇧','z','x','c','v','b','n','m','⌫'],
+    ['123','🎤',' ','⏎']
+  ],
+  digit:[
+    ['1','2','3','4','5','6','7','8','9','0'],
+    ['-','/',':',';','(',')','$','&','@','"'],
+    ['#+=','.',',','?','!','\'','⇧','⌫'],
+    ['ABC','🎤',' ','⏎']
+  ]
+};
+
+// 修复：确保键盘渲染不依赖外部条件
+function renderKB(){
+  const kb=document.getElementById('keyboard');
+  if(!kb)return;
+  kb.innerHTML=''; // 清空旧键盘
+
+  const currentLayout=layout==='digit'?LAYOUTS.digit:LAYOUTS.qwerty;
+  currentLayout.forEach(row=>{
+    const rowEl=document.createElement('div');
+    rowEl.className='row';
+
+    row.forEach(keyText=>{
+      const keyEl=document.createElement('div');
+      keyEl.className='key';
+      keyEl.textContent=keyText;
+
+      // 标记功能键
+      if(['⇧','123','ABC','🎤','⏎','⌫','#+='].includes(keyText)){
+        keyEl.classList.add('fn');
+      }
+      // Shift按下状态
+      if(keyText==='⇧'&&shift){
+        keyEl.style.background='var(--theme)';
+      }
+      // 绑定点击事件
+      keyEl.addEventListener('click',()=>handleKey(keyText));
+      rowEl.appendChild(keyEl);
+    });
+    kb.appendChild(rowEl);
+  });
+}
+
+function handleKey(keyText){
+  const scr=document.getElementById('screen');
+  switch(keyText){
+    case '⇧':
+      shift=!shift;
+      renderKB(); // 重新渲染键盘显示状态
+      break;
+    case '⌫':
+      // 支持删除文本和图片
+      if(scr.lastChild){
+        // 若最后一个是空格，先删空格
+        if(scr.lastChild.nodeType===3&&scr.lastChild.textContent.trim()===''){
+          scr.removeChild(scr.lastChild);
+        }
+        if(scr.lastChild){
+          scr.removeChild(scr.lastChild);
+        }
+      }
+      break;
+    case '⏎':
+      scr.appendChild(document.createElement('br'));
+      break;
+    case '123':
+      layout='digit';
+      renderKB();
+      break;
+    case 'ABC':
+      layout='qwerty';
+      renderKB();
+      break;
+    case '🎤':
+      status('语音功能预留');
+      break;
+    case ' ':
+      scr.appendChild(document.createTextNode(' '));
+      break;
+    default:
+      // 输入拉丁字母（处理大小写）
+      const char=shift?keyText.toUpperCase():keyText.toLowerCase();
+      scr.appendChild(document.createTextNode(char));
+      // 更新候选栏
+      updateCand(char.toLowerCase());
+      // 自动取消Shift
+      if(shift&&!['⇧','123','ABC'].includes(keyText)){
+        shift=false;
+        renderKB();
+      }
+      break;
+  }
+}
+
+function updateCand(latin){
+  const box=document.getElementById('candidate');
+  if(!box)return;
+  box.innerHTML='';
+
+  const candidates=charTable[latin]||[];
+  if(!candidates.length){
+    box.innerHTML='<em style="color:#666">无候选</em>';
+    return;
+  }
+
+  candidates.forEach(cand=>{
+    const div=document.createElement('div');
+    div.className='cand-char';
+
+    const img=new Image();
+    img.src=cand.mirrorUrl||cand.url;
+    img.style.height='32px';
+    img.onerror=()=>{
+      div.textContent=cand.url.split('/').pop().slice(0,2);
+      div.style.fontSize='12px';
+      div.style.color='#ccc';
+    };
+    div.appendChild(img);
+
+    div.onclick=()=>{
+      const scr=document.getElementById('screen');
+      const container=document.createElement('span');
+      container.style.display='inline-block';
+      container.style.verticalAlign='middle';
+
+      const charImg=new Image();
+      charImg.src=cand.mirrorUrl||cand.url;
+      charImg.style.height='1em';
+      charImg.onerror=()=>{
+        container.textContent=`[${cand.url.split('/').pop().slice(0,2)}]`;
+        container.style.color='#ccc';
+      };
+      container.appendChild(charImg);
+      scr.appendChild(container);
+      scr.appendChild(document.createTextNode(' '));
+    };
+    box.appendChild(div);
+  });
+}
+
+/***************  辅助功能  ****************/
+function bindIME(){
+  const scr=document.getElementById('screen');
+  if(!scr)return;
+
+  // 长按输入框打开手绘面板（移动端）
+  let longPressTimer=null;
+  scr.addEventListener('touchstart',e=>{
+    longPressTimer=setTimeout(()=>{
+      openDraw();
+      e.preventDefault();
+    },500);
+  });
+  scr.addEventListener('touchend',()=>clearTimeout(longPressTimer));
+  scr.addEventListener('touchcancel',()=>clearTimeout(longPressTimer));
+
+  // 优化输入框换行
+  scr.addEventListener('keydown',e=>{
+    if(e.key==='Enter'&&!e.ctrlKey){
+      e.preventDefault();
+      scr.appendChild(document.createElement('br'));
+    }
+  });
+}
+
+// 状态提示函数
+function status(msg){
+  const statusEl=document.getElementById('status');
+  if(statusEl)statusEl.textContent=msg;
+  // 3秒后自动恢复
+  clearTimeout(statusEl?.timer);
+  if(statusEl){
+    statusEl.timer=setTimeout(()=>{
+      statusEl.textContent='就绪';
+    },3000);
+  }
+}
+</script>
+</body>
+</html>
