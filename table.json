@@ -1,1 +1,28 @@
-{"m'my":[{"url":"https://raw.githubusercontent.com/Zhou-Yihui/daliang/main/chars/m'my_1761656691165.png","filename":"chars/m'my_1761656691165.png"}],"amel":[{"url":"https://raw.githubusercontent.com/Zhou-Yihui/daliang/main/chars/amel_1761656856580.png","filename":"chars/amel_1761656856580.png"},{"url":"https://raw.githubusercontent.com/Zhou-Yihui/daliang/main/chars/amel_1761656859176.png","filename":"chars/amel_1761656859176.png"},{"url":"https://raw.githubusercontent.com/Zhou-Yihui/daliang/main/chars/amel_1761656861915.png","filename":"chars/amel_1761656861915.png"}]}
+{
+  "m'my": [
+    {
+      "url": "https://raw.githubusercontent.com/Zhou-Yihui/daliang/main/chars/m'my_1761656691165.png",
+      "filename": "chars/m'my_1761656691165.png"
+    }
+  ],
+  "amel": [
+    {
+      "url": "https://raw.githubusercontent.com/Zhou-Yihui/daliang/main/chars/amel_1761656856580.png",
+      "filename": "chars/amel_1761656856580.png"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Zhou-Yihui/daliang/main/chars/amel_1761656859176.png",
+      "filename": "chars/amel_1761656859176.png"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Zhou-Yihui/daliang/main/chars/amel_1761656861915.png",
+      "filename": "chars/amel_1761656861915.png"
+    }
+  ],
+  "lar": [
+    {
+      "url": "https://raw.githubusercontent.com/Zhou-Yihui/daliang/main/chars/lar_1761663469755.png",
+      "filename": "chars/lar_1761663469755.png"
+    }
+  ]
+}
