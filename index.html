@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>大凉语输入法安全版</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"/>
+<style>
+:root{--theme:#7c4dff;--bg:#121212;--key:#1e1e1e;--text:#fff;--border:rgba(255,255,255,.15)}
+*{box-sizing:border-box;font-family:Roboto,Helvetica Neue,PingFang SC}
+body{margin:0;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column}
+header{height:48px;background:var(--theme);display:flex;align-items:center;padding:0 12px;font-weight:bold}
+main{flex:1;display:flex;flex-direction:column}
+#screen{flex:1;padding:12px;font-size:24px;background:#000;border:1px solid var(--border);overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+#toolbar{height:42px;display:flex;align-items:center;padding:0 8px;border-bottom:1px solid var(--border)}
+#toolbar button{margin-left:auto;height:32px;border:none;border-radius:4px;background:var(--theme);color:#fff;padding:0 12px;cursor:pointer}
+#candidate{height:46px;display:flex;align-items:center;padding:0 8px;border-bottom:1px solid var(--border);overflow-x:auto}
+.cand-char{height:36px;margin:0 4px;border:1px solid var(--border);border-radius:4px;background:var(--key);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
+.cand-char img{height:32px;width:auto;pointer-events:none}
+#keyboard{height:260px;display:flex;flex-direction:column;background:var(--key)}
+.row{display:flex;flex:1}
+.key{flex:1;margin:3px;border-radius:6px;background:#2a2a2a;display:flex;align-items:center;justify-content:center;font-size:18px;cursor:pointer;transition:background .1s}
+.key:active{background:var(--theme)}
+.key.fn{font-size:14px;background:#333}
+#drawPanel{position:fixed;inset:0;background:#000;display:flex;flex-direction:column;z-index:1000}
+#drawTop{height:52px;background:var(--theme);display:flex;align-items:center;justify-content:space-between;padding:0 12px}
+#drawCanvas{flex:1;background:#000;cursor:crosshair}
+#drawTools{padding:8px;display:flex;gap:8px;flex-wrap:wrap}
+.btn{background:var(--theme);border:0;color:#fff;padding:8px 14px;border-radius:4px;cursor:pointer}
+input[type=file]{display:none}
+label.btn{display:inline-block}
+#status{position:fixed;bottom:4px;left:50%;transform:translateX(-50%);background:#000;border:1px solid var(--border);padding:4px 12px;border-radius:12px;font-size:12px;color:var(--theme)}
+/* 新增：本地保存按钮样式 */
+#localSaveBtn{margin-left:8px;background:#4CAF50}
+</style>
+</head>
+<body>
+<header>大凉语输入法安全版</header>
+
+<main>
+  <div id="screen" contenteditable="true" placeholder="点这里输入…"></div>
+  <div id="toolbar">
+    <span>候选</span>
+    <button onclick="openDraw()">✍️ 绘制新字符</button>
+  </div>
+  <div id="candidate"></div>
+  <div id="keyboard"></div>
+</main>
+
+<!-- 手写面板：新增本地保存按钮 -->
+<div id="drawPanel" style="display:none">
+  <div id="drawTop">
+    <span>绘制新字符</span>
+    <div>
+      <input id="latinIn" placeholder="对应拉丁字母" maxlength="20"/>
+      <button class="btn" id="saveBtn" onclick="saveGlyph()">保存并上传(GitHub)</button>
+      <button class="btn" id="localSaveBtn" onclick="saveGlyphLocally()">本地保存(仅本设备)</button>
+      <button class="btn" onclick="closeDraw()">关闭</button>
+    </div>
+  </div>
+  <canvas id="drawCanvas"></canvas>
+  <div id="drawTools">
+    <label class="btn">笔宽<input type="range" id="brushW" min="2" max="40" value="6"></label>
+    <button class="btn" onclick="toogleEraser()">橡皮擦</button>
+    <button class="btn" onclick="clearDraw()">清屏</button>
+    <button class="btn" onclick="undoStroke()">撤销</button>
+    <label class="btn">上传底图<input type="file" id="bgFile" accept="image/*"></label>
+  </div>
+</div>
+
+<span id="status">就绪</span>
+<button onclick="location.reload()" style="position:fixed;bottom:60px;right:8px;height:32px;border:none;border-radius:4px;background:var(--theme);color:#fff;cursor:pointer">🔄 重载字符</button>
+
+<script>
+/***************  配置  ****************/
+const owner='Zhou-Yihui';   //  ← 只改这里
+const repo='daliang';          //  仓库名
+let token=localStorage.getItem('gtoken');
+if(!token){
+  token=prompt('GitHub Personal Access Token（仅本地存储，永不进源码）');
+  if(token)localStorage.setItem('gtoken',token);
+}
+
+/***************  全局变量  ****************/
+let layout='qwerty';
+let page=0;
+let shift=false;
+let charTable={};
+let imgBg;          // 手绘底图
+let strokes=[],currStr=[];
+let isDraw=false,isErase=false;
+let drawCtx,canvas;
+// 新增：本地存储键名（避免与其他数据冲突）
+const LOCAL_CHAR_KEY='daliang_char_table';
+
+/***************  初始化  ****************/
+window.onload=()=>{
+  canvas=document.getElementById('drawCanvas');
+  drawCtx=canvas.getContext('2d');
+  resizeCanvas();
+  window.addEventListener('resize',resizeCanvas);
+  bindDrawEvents();
+  // 改动：优先加载本地字符表，再同步远程
+  loadLocalTable();
+  loadRemoteTable().then(()=>{
+    renderKB();
+    bindIME();
+  });
+};
+function resizeCanvas(){
+  canvas.width=canvas.clientWidth;
+  canvas.height=canvas.clientHeight;
+  if(imgBg)drawCtx.drawImage(imgBg,0,0,canvas.width,canvas.height);
+}
+
+/***************  GitHub API  ****************/
+async function gh(method,path,body){
+  const res=await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`,{
+    method,headers:{Authorization:`token ${token}`,'Content-Type':'application/json'},
+    body:body?JSON.stringify(body):undefined
+  });
+  if(!res.ok)throw new Error(await res.text());
+  return res.json();
+}
+async function loadRemoteTable(){
+  status('同步远程字符表…');
+  try{
+    const {content}=await gh('GET','table.json');
+    const remoteTable=JSON.parse(atob(content));
+    // 改动：合并远程表到本地表（避免覆盖本地数据）
+    for(const [latin, chars] of Object.entries(remoteTable)){
+      if(!charTable[latin])charTable[latin]=[];
+      // 去重：避免重复添加相同图片
+      const existingUrls=charTable[latin].map(c=>c.url);
+      const newChars=chars.filter(c=>!existingUrls.includes(c.url));
+      charTable[latin]=[...charTable[latin],...newChars];
+    }
+    // 合并后保存到本地
+    saveLocalTable();
+    status('远程同步完成');
+  }catch(e){
+    if(e.message.includes('Not Found')){status('远程无表，使用本地表');}
+    else status('同步失败 '+e.message);
+  }
+}
+async function pushToGit(path,content,message){
+  let sha;
+  try{sha=(await gh('GET',path)).sha;}catch(e){}
+  await gh('PUT',path,{
+    message:message||'update '+path,
+    content:btoa(typeof content==='string'?content:JSON.stringify(content)),
+    sha
+  });
+}
+
+/***************  新增：本地字符表操作  ****************/
+// 加载本地字符表
+function loadLocalTable(){
+  status('加载本地字符表…');
+  try{
+    const localData=localStorage.getItem(LOCAL_CHAR_KEY);
+    if(localData)charTable=JSON.parse(localData);
+    status('本地表加载完成');
+  }catch(e){
+    status('本地表损坏，新建');
+    charTable={};
+    saveLocalTable();
+  }
+}
+// 保存字符表到本地
+function saveLocalTable(){
+  try{
+    localStorage.setItem(LOCAL_CHAR_KEY,JSON.stringify(charTable));
+  }catch(e){
+    status('本地保存失败：'+e.message);
+  }
+}
+// 本地保存单个字符（不上传GitHub）
+function saveGlyphLocally(){
+  const latin=document.getElementById('latinIn').value.trim().toLowerCase();
+  if(!latin){alert('请输入拉丁键');return;}
+  if(!strokes.length){alert('请绘制字符');return;}
+
+  try{
+    // 1. 生成图片Blob并获取本地URL
+    canvas.toBlob(blob=>{
+      const localUrl=URL.createObjectURL(blob);
+      // 2. 保存到本地字符表
+      if(!charTable[latin])charTable[latin]=[];
+      const newRec={
+        url:localUrl,
+        type:'local', // 标记为本地字符
+        timestamp:Date.now()
+      };
+      charTable[latin].push(newRec);
+      // 3. 保存到本地存储
+      saveLocalTable();
+      // 4. 立即添加到候选栏
+      insertLocalCand(newRec);
+      // 5. 下载图片到本地（可选，让用户手动保存）
+      const a=document.createElement('a');
+      a.href=localUrl;
+      a.download=`daliang_${latin}_${Date.now()}.png`;
+      a.click();
+      URL.revokeObjectURL(localUrl); // 释放URL
+
+      status('✅ 本地保存成功！');
+      clearDraw();
+      document.getElementById('latinIn').value='';
+    });
+  }catch(e){
+    status('本地保存失败: '+e.message);
+    alert('本地保存失败\n'+e.message);
+  }
+}
+
+/***************  手绘  ****************/
+function bindDrawEvents(){
+  const down=e=>{
+    isDraw=true;currStr=[];const {x,y}=getXY(e);
+    drawCtx.beginPath();drawCtx.moveTo(x,y);currStr.push({x,y});
+  };
+  const move=e=>{
+    if(!isDraw)return;const {x,y}=getXY(e);
+    drawCtx.lineWidth=isErase?document.getElementById('brushW').value*2:document.getElementById('brushW').value;
+    drawCtx.globalCompositeOperation=isErase?'destination-out':'source-over';
+    drawCtx.strokeStyle='#fff';drawCtx.lineTo(x,y);drawCtx.stroke();
+    currStr.push({x,y});
+  };
+  const up=()=>{isDraw=false;if(currStr.length)strokes.push([...currStr]);};
+  canvas.onmousedown=down;canvas.onmousemove=move;canvas.onmouseup=up;canvas.onmouseout=up;
+  canvas.ontouchstart=e=>{e.preventDefault();down(e.touches[0]);};
+  canvas.ontouchmove=e=>{e.preventDefault();move(e.touches[0]);};
+  canvas.ontouchend=up;
+  document.getElementById('bgFile').onchange=e=>{
+    const file=e.target.files[0];if(!file)return;
+    imgBg=new Image();imgBg.onload=()=>{drawCtx.drawImage(imgBg,0,0,canvas.width,canvas.height);};
+    imgBg.src=URL.createObjectURL(file);
+  };
+}
+function getXY(e){const r=canvas.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top};}
+function clearDraw(){drawCtx.clearRect(0,0,canvas.width,canvas.height);if(imgBg)drawCtx.drawImage(imgBg,0,0,canvas.width,canvas.height);strokes=[];}
+function undoStroke(){strokes.pop();clearDraw();redrawStrokes();}
+function redrawStrokes(){drawCtx.save();drawCtx.strokeStyle='#fff';drawCtx.lineWidth=document.getElementById('brushW').value;drawCtx.lineCap='round';strokes.forEach(s=>{if(s.length){drawCtx.beginPath();drawCtx.moveTo(s[0].x,s[0].y);s.forEach(p=>drawCtx.lineTo(p.x,p.y));drawCtx.stroke();}});drawCtx.restore();}
+function toogleEraser(){isErase=!isErase;status(isErase?'橡皮擦':'绘制');}
+function openDraw(){document.getElementById('drawPanel').style.display='flex';resizeCanvas();}
+function closeDraw(){document.getElementById('drawPanel').style.display='none';}
+
+/* ========== 保存并上传（立即可用+raw域名+20字母） ========== */
+async function saveGlyph(){
+  const latin=document.getElementById('latinIn').value.trim().toLowerCase();
+  if(!latin){alert('请输入拉丁键');return;}
+  if(!strokes.length){alert('请绘制字符');return;}
+  const btn=document.getElementById('saveBtn');
+  btn.disabled=true; btn.textContent='上传中…';
+  try{
+    /* 1. 生成 PNG */
+    const blob=await new Promise(res=>drawCtx.canvas.toBlob(res));
+    const base64=await new Promise(r=>{
+      const reader=new FileReader();
+      reader.onload=()=>r(reader.result.split(',')[1]);
+      reader.readAsDataURL(blob);
+    });
+    const filename=`chars/${latin}_${Date.now()}.png`;
+
+    /* 2. 推到 GitHub = 二进制文件，非Base64文本 */
+    await pushToGit(filename,base64,'add char '+latin);
+
+    /* 3. 本地映射表立即生效（无需等同步）+ 兼容国内访问（新增GitHub镜像链接） */
+    if(!charTable[latin])charTable[latin]=[];
+    // 改动：添加 GitHub 官方链接 + 国内镜像链接（解决raw访问问题）
+    const newRec={
+      url:`https://raw.githubusercontent.com/${owner}/${repo}/main/${filename}`,
+      mirrorUrl:`https://github.moeyy.xyz/https://raw.githubusercontent.com/${owner}/${repo}/main/${filename}`, // 国内镜像
+      filename,
+      type:'remote'
+    };
+    charTable[latin].push(newRec);
+
+    /* 4. 远程也更新 */
+    await pushToGit('table.json',JSON.stringify(charTable,null,2),'update table');
+
+    /* 5. 立即塞进候选栏，用户马上能用（优先用镜像链接） */
+    insertLocalCand({...newRec, url:newRec.mirrorUrl});
+
+    /* 6. 本地保存一份，避免刷新丢失 */
+    saveLocalTable();
+
+    status('✅ 已保存并生效！');
+    clearDraw();          // 清空画布
+    document.getElementById('latinIn').value=''; // 清空拉丁框
+    closeDraw();          // 关闭手绘板
+  }catch(e){
+    status('保存失败: '+e.message);
+    alert('保存失败\n'+e.message);
+  }finally{
+    btn.disabled=false; btn.textContent='保存并上传(GitHub)'; // 恢复按钮
+  }
+}
+/* 把新字符立即插入当前候选栏（本地立即可用） */
+function insertLocalCand(rec){
+  const box=document.getElementById('candidate');
+  const div=document.createElement('div');div.className='cand-char';
+  const img=new Image();
+  // 改动：图片加载失败时降级（用镜像链接/显示文字占位）
+  img.src=rec.url;
+  img.onerror=()=>{
+    // 1. 尝试镜像链接
+    if(rec.mirrorUrl){
+      img.src=rec.mirrorUrl;
+    }else{
+      // 2. 无镜像则显示文字占位
+      div.innerHTML=`${rec.url.split('/').pop().slice(0,3)}`;
+      div.style.fontSize='12px';
+    }
+  };
+  div.appendChild(img);
+  // 改动：输入框插入
+      div.onclick=()=>{
+        const scr=document.getElementById('screen');
+        const charContainer=document.createElement('span');
+        charContainer.style.display='inline-block';
+        charContainer.style.verticalAlign='middle';
+        
+        const im=new Image();
+        im.src=rec.url;
+        im.style.height='1em';
+        im.onerror=()=>{
+          // 图片加载失败时显示占位文本
+          charContainer.textContent=`[${rec.url.split('/').pop().slice(0,2)}]`;
+          charContainer.style.color='#ccc';
+        };
+        charContainer.appendChild(im);
+        scr.appendChild(charContainer);
+        scr.appendChild(document.createTextNode(' '));
+      };
+      box.appendChild(div);
+    }
+
+    /***************  键盘 & 候选  ****************/
+    const LAYOUTS={
+      qwerty:[
+        ['q','w','e','r','t','y','u','i','o','p'],
+        ['a','s','d','f','g','h','j','k','l'],
+        ['⇧','z','x','c','v','b','n','m','⌫'],
+        ['123','🎤',' ','⏎']
+      ],
+      digit:[
+        ['1','2','3','4','5','6','7','8','9','0'],
+        ['-','/',':',';','(',')','$','&','@','"'],
+        ['#+=','.',',','?','!','\'','⇧','⌫'],
+        ['ABC','🎤',' ','⏎']
+      ]
+    };
+    function renderKB(){
+      const kb=document.getElementById('keyboard');
+      kb.innerHTML='';
+      const lay=(layout==='digit'?LAYOUTS.digit:LAYOUTS.qwerty);
+      lay.forEach(row=>{
+        const r=document.createElement('div');r.className='row';
+        row.forEach(k=>{
+          const key=document.createElement('div');key.className='key';key.textContent=k;
+          if(k==='⇧'||k==='123'||k==='ABC'||k==='🎤'||k==='⏎'||k==='⌫'||k==='#+=')key.classList.add('fn');
+          // 改动：Shift键添加视觉反馈
+          if(k==='⇧'&&shift)key.style.background='var(--theme)';
+          key.onclick=()=>handleKey(k);
+          r.appendChild(key);
+        });
+        kb.appendChild(r);
+      });
+    }
+    function handleKey(k){
+      const scr=document.getElementById('screen');
+      if(k==='⇧'){shift=!shift;renderKB();return;}
+      if(k==='⌫'){
+        // 改动：支持删除图片/文本（兼容富文本）
+        const lastChild=scr.lastChild;
+        if(lastChild?.nodeType===3&&lastChild.textContent.trim()===''){
+          scr.removeChild(lastChild);
+        }
+        if(scr.lastChild)scr.removeChild(scr.lastChild);
+        return;
+      }
+      if(k==='⏎'){scr.appendChild(document.createElement('br'));return;}
+      if(k==='123'){layout='digit';renderKB();return;}
+      if(k==='ABC'){layout='qwerty';renderKB();return;}
+      if(k==='🎤'){status('语音接口预留');return;}
+      if(k===' '){scr.appendChild(document.createTextNode(' '));return;}
+      const l=(shift?k.toUpperCase():k);
+      // 改动：输入拉丁字母时添加视觉反馈
+      const textNode=document.createTextNode(l);
+      scr.appendChild(textNode);
+      updateCand(l);
+      // 自动取消Shift（模拟真实键盘）
+      if(shift&&!['⇧','123','ABC'].includes(k)){
+        shift=false;
+        renderKB();
+      }
+    }
+    function updateCand(l){
+      const box=document.getElementById('candidate');
+      box.innerHTML='';
+      const list=charTable[l]||[];
+      if(!list.length){
+        box.innerHTML='<em style="color:#666">无候选</em>';
+        return;
+      }
+      list.forEach(it=>{
+        const div=document.createElement('div');div.className='cand-char';
+        const img=new Image();
+        // 优先使用镜像链接（解决国内访问问题）
+        img.src=it.mirrorUrl||it.url;
+        img.style.height='32px';
+        img.onerror=()=>{
+          // 图片加载失败时显示占位
+          div.innerHTML=`${it.url.split('/').pop().slice(0,2)}`;
+          div.style.fontSize='12px';
+          div.style.color='#ccc';
+        };
+        div.appendChild(img);
+        div.onclick=()=>{
+          const scr=document.getElementById('screen');
+          const charContainer=document.createElement('span');
+          charContainer.style.display='inline-block';
+          charContainer.style.verticalAlign='middle';
+          
+          const im=new Image();
+          im.src=it.mirrorUrl||it.url;
+          im.style.height='1em';
+          im.onerror=()=>{
+            charContainer.textContent=`[${it.url.split('/').pop().slice(0,2)}]`;
+            charContainer.style.color='#ccc';
+          };
+          charContainer.appendChild(im);
+          scr.appendChild(charContainer);
+          scr.appendChild(document.createTextNode(' '));
+        };
+        box.appendChild(div);
+      });
+    }
+    function bindIME(){
+      let timer;
+      const scr=document.getElementById('screen');
+      scr.addEventListener('touchstart',e=>{
+        timer=setTimeout(()=>{
+          openDraw();
+          e.preventDefault();
+        },500);
+      });
+      scr.addEventListener('touchend',()=>clearTimeout(timer));
+      // 新增：禁止输入框默认换行（优化移动端体验）
+      scr.addEventListener('keydown',e=>{
+        if(e.key==='Enter'&&!e.ctrlKey){
+          e.preventDefault();
+          scr.appendChild(document.createElement('br'));
+        }
+      });
+    }
+    function status(msg){
+      const statusEl=document.getElementById('status');
+      statusEl.textContent=msg;
+      // 状态3秒后自动清空（避免干扰）
+      clearTimeout(statusEl.timer);
+      statusEl.timer=setTimeout(()=>{
+        statusEl.textContent='就绪';
+      },3000);
+    }
+  </script>
+</body>
+</html>
