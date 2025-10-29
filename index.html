@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>大凉语输入法·无冲突同步版</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"/>
+<style>
+:root{
+  --theme:#7c4dff;--bg:#121212;--key:#1e1e1e;--text:#fff;--border:rgba(255,255,255,.15);
+  --scale:0.8;
+}
+*{box-sizing:border-box;font-family:Roboto,Helvetica Neue,PingFang SC;font-size:calc(14px * var(--scale));user-select:none}
+body{margin:0;background:var(--bg);color:var(--text);display:flex;flex-direction:column;height:100vh}
+header{height:calc(40px * var(--scale));background:var(--theme);display:flex;align-items:center;padding:0 calc(10px * var(--scale));font-weight:bold}
+main{flex:1;display:flex;flex-direction:column}
+#screen{flex:1;padding:calc(10px * var(--scale));font-size:calc(24px * var(--scale));background:#000;border:1px solid var(--border);overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+#toolbar{height:calc(36px * var(--scale));display:flex;align-items:center;padding:0 calc(6px * var(--scale));border-bottom:1px solid var(--border)}
+#toolbar button{margin-left:auto;height:calc(28px * var(--scale));border:none;border-radius:4px;background:var(--theme);color:#fff;padding:0 calc(10px * var(--scale));cursor:pointer}
+#candidate{height:calc(40px * var(--scale));display:flex;align-items:center;padding:0 calc(6px * var(--scale));border-bottom:1px solid var(--border);overflow-x:auto}
+.cand-char{height:calc(32px * var(--scale));margin:0 calc(4px * var(--scale));border:1px solid var(--border);border-radius:4px;background:var(--key);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
+.cand-char img{height:calc(28px * var(--scale));width:auto;pointer-events:none}
+#keyboard{height:calc(220px * var(--scale));display:flex;flex-direction:column;background:var(--key);padding-bottom:env(safe-area-inset-bottom)}
+.row{display:flex;flex:1}
+.key{flex:1;margin:calc(3px * var(--scale));border-radius:calc(6px * var(--scale));background:#2a2a2a;display:flex;align-items:center;justify-content:center;font-size:calc(18px * var(--scale));cursor:pointer;transition:background .1s}
+.key:active{background:var(--theme)}
+.key.fn{font-size:calc(14px * var(--scale));background:#333}
+#drawPanel{position:fixed;inset:0;background:#000;display:flex;flex-direction:column;z-index:1000}
+#drawTop{height:calc(44px * var(--scale));background:var(--theme);display:flex;align-items:center;justify-content:space-between;padding:0 calc(10px * var(--scale))}
+#drawCanvas{flex:1;background:#000;cursor:crosshair}
+#drawTools{padding:calc(8px * var(--scale));display:flex;gap:calc(8px * var(--scale));flex-wrap:wrap}
+.btn{background:var(--theme);border:0;color:#fff;padding:calc(8px * var(--scale)) calc(14px * var(--scale));border-radius:4px;cursor:pointer}
+#permBtn{background:#4CAF50}
+input[type=file]{display:none}
+label.btn{display:inline-block}
+#status{position:fixed;bottom:4px;left:50%;transform:translateX(-50%);background:#000;border:1px solid var(--border);padding:4px 12px;border-radius:12px;font-size:calc(12px * var(--scale));color:var(--theme)}
+#latinIn{height:calc(28px * var(--scale));font-size:calc(13px * var(--scale));padding:0 6px;border-radius:4px;border:1px solid var(--border);background:#000;color:var(--text)}
+</style>
+</head>
+<body>
+<header>大凉语输入法·无冲突同步版</header>
+<main>
+  <div id="screen" contenteditable="true" placeholder="点这里输入…"></div>
+  <div id="toolbar">
+    <span>候选</span>
+    <button onclick="openDraw()">✍️ 绘制</button>
+  </div>
+  <div id="candidate"></div>
+  <div id="keyboard"></div>
+</main>
+
+<div id="drawPanel" style="display:none">
+  <div id="drawTop">
+    <span>绘制新字符</span>
+    <div>
+      <input id="latinIn" placeholder="对应拉丁字母" maxlength="20"/>
+      <button class="btn" id="permBtn" onclick="permSave()">永久保存</button>
+      <button class="btn" onclick="closeDraw()">关闭</button>
+    </div>
+  </div>
+  <canvas id="drawCanvas"></canvas>
+  <div id="drawTools">
+    <label class="btn">笔宽<input type="range" id="brushW" min="2" max="40" value="6"></label>
+    <button class="btn" onclick="toogleEraser()">橡皮擦</button>
+    <button class="btn" onclick="clearDraw()">清屏</button>
+    <button class="btn" onclick="undoStroke()">撤销</button>
+    <label class="btn">上传底图<input type="file" id="bgFile" accept="image/*"></label>
+  </div>
+</div>
+
+<span id="status">就绪</span>
+<button onclick="location.reload()" style="position:fixed;bottom:60px;right:8px;height:32px;border:none;border-radius:4px;background:var(--theme);color:#fff;cursor:pointer">🔄 重载字符</button>
+
+<script>
+/* ==================  你的仓库  ================== */
+const owner = 'Zhou-Yihui';
+const repo  = 'daliang';
+
+/* ==================  Token  ================== */
+let token = localStorage.getItem('gtoken');
+if (!token) {
+  token = prompt('GitHub Personal Access Token（仅本地存储）');
+  if (token) localStorage.setItem('gtoken', token);
+}
+
+/* ==================  全局变量  ================== */
+let layout = 'qwerty', shift = false, charTable = {};
+let imgBg, strokes = [], currStr = [], isDraw = false, isErase = false;
+let drawCtx, canvas;
+const LOCAL_CHAR_KEY = 'daliang_char_table';
+
+/* ==================  100 vh 修复  ================== */
+function fix100vh() {
+  const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+  document.documentElement.style.height = h + 'px';
+  document.body.style.height = h + 'px';
+}
+window.addEventListener('resize', fix100vh);
+window.addEventListener('scroll', fix100vh);
+if (window.visualViewport) visualViewport.addEventListener('resize', fix100vh);
+
+/* ==================  初始化（无冲突同步版）  ================== */
+window.onload = async () => {
+  fix100vh();
+  canvas = document.getElementById('drawCanvas');
+  drawCtx = canvas.getContext('2d');
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+  bindDrawEvents();
+  // 1. 先拉远程最新表（含别人上传）
+  await loadRemoteTable();
+  // 2. 合并本地新增（去重）
+  mergeLocalNew();
+  // 3. 清掉旧 blob
+  cleanupBlob();
+  // 4. 继续原流程
+  renderKB();
+  bindIME();
+};
+
+/* ==================  无冲突同步：合并本地新增  ================== */
+function mergeLocalNew() {
+  const raw = localStorage.getItem(LOCAL_CHAR_KEY);
+  if (!raw) return;
+  const local = JSON.parse(raw);
+  for (const latin in local) {
+    if (!Array.isArray(local[latin])) continue;
+    if (!charTable[latin]) charTable[latin] = [];
+    const remoteSet = new Set(charTable[latin].map(it => it.url));
+    const add = local[latin].filter(it => !remoteSet.has(it.url));
+    charTable[latin].push(...add);
+  }
+  saveLocalTable();   // 合并后写回
+}
+
+/* ==================  画布 & 手绘  ================== */
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * dpr;
+  canvas.height = canvas.clientHeight * dpr;
+  drawCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (imgBg) drawCtx.drawImage(imgBg, 0, 0, canvas.width, canvas.height);
+}
+function bindDrawEvents() {
+  const down = e => {
+    isDraw = true; currStr = []; const { x, y } = getXY(e);
+    drawCtx.beginPath(); drawCtx.moveTo(x, y); currStr.push({ x, y });
+  };
+  const move = e => {
+    if (!isDraw) return; const { x, y } = getXY(e);
+    drawCtx.lineWidth = isErase ? document.getElementById('brushW').value * 2 : document.getElementById('brushW').value;
+    drawCtx.globalCompositeOperation = isErase ? 'destination-out' : 'source-over';
+    drawCtx.strokeStyle = '#fff'; drawCtx.lineTo(x, y); drawCtx.stroke();
+    currStr.push({ x, y });
+  };
+  const up = () => { isDraw = false; if (currStr.length) strokes.push([...currStr]); };
+  canvas.onmousedown = down; canvas.onmousemove = move; canvas.onmouseup = up; canvas.onmouseout = up;
+  canvas.ontouchstart = e => { e.preventDefault(); down(e.touches[0]); };
+  canvas.ontouchmove = e => { e.preventDefault(); move(e.touches[0]); };
+  canvas.ontouchend = up;
+  document.getElementById('bgFile').onchange = e => {
+    const file = e.target.files[0]; if (!file) return;
+    imgBg = new Image(); imgBg.onload = () => { drawCtx.drawImage(imgBg, 0, 0, canvas.width, canvas.height); };
+    imgBg.src = URL.createObjectURL(file);
+  };
+}
+function getXY(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function clearDraw() { drawCtx.clearRect(0, 0, canvas.width, canvas.height); if (imgBg) drawCtx.drawImage(imgBg, 0, 0, canvas.width, canvas.height); strokes = []; }
+function undoStroke() { strokes.pop(); clearDraw(); redrawStrokes(); }
+function redrawStrokes() {
+  drawCtx.save(); drawCtx.strokeStyle = '#fff'; drawCtx.lineWidth = document.getElementById('brushW').value; drawCtx.lineCap = 'round';
+  strokes.forEach(s => { if (s.length) { drawCtx.beginPath(); drawCtx.moveTo(s[0].x, s[0].y); s.forEach(p => drawCtx.lineTo(p.x, p.y)); drawCtx.stroke(); } });
+  drawCtx.restore();
+}
+function toogleEraser() { isErase = !isErase; status(isErase ? '橡皮擦' : '绘制'); }
+function openDraw() { document.getElementById('drawPanel').style.display = 'flex'; resizeCanvas(); }
+function closeDraw() { document.getElementById('drawPanel').style.display = 'none'; }
+
+/* ==================  一键永久保存：本地+GitHub  ================== */
+async function permSave() {
+  const latin = document.getElementById('latinIn').value.trim().toLowerCase();
+  if (!latin) { alert('请输入拉丁字母'); return; }
+  if (!strokes.length) { alert('请先绘制字符'); return; }
+  status('正在永久保存…');
+  try {
+    // 1. 本地永久保存（dataURL）
+    const blob = await new Promise(res => canvas.toBlob(res));
+    const dataURL = await new Promise((res, rej) => {
+      const reader = new FileReader();
+      reader.onload = () => res(reader.result);
+      reader.onerror = rej;
+      reader.readAsDataURL(blob);
+    });
+    if (!charTable[latin]) charTable[latin] = [];
+    charTable[latin].push({ url: dataURL, type: 'local', ts: Date.now() });
+
+    // 2. 上传 GitHub（先取最新 sha 防 409）
+    const base64 = dataURL.split(',')[1];
+    const filename = `chars/${latin}_${Date.now()}.png`;
+    await pushToGit(filename, base64, 'add char ' + latin);
+    const record = {
+      url: `https://raw.githubusercontent.com/${owner}/${repo}/main/${filename}`,
+      mirrorUrl: `https://github.moeyy.xyz/https://raw.githubusercontent.com/${owner}/${repo}/main/${filename}`,
+      filename, type: 'remote'
+    };
+    charTable[latin].push(record);
+    await pushToGit('table.json', JSON.stringify(charTable, null, 2), 'update table');
+
+    // 3. 立即插入候选栏
+    insertLocalCand(record);
+    saveLocalTable();
+    status('✅ 已永久保存（本地+GitHub）');
+    clearDraw();
+    document.getElementById('latinIn').value = '';
+  } catch (e) {
+    status('保存失败 ' + e.message);
+    alert('保存失败\n' + e.message);
+  }
+}
+function insertLocalCand(rec) {
+  const box = document.getElementById('candidate');
+  const div = document.createElement('div'); div.className = 'cand-char';
+  const img = new Image(); img.style.height = '32px'; img.src = rec.mirrorUrl || rec.url;
+  img.onerror = () => { div.textContent = rec.url.split('/').pop().slice(0, 2); div.style.fontSize = '12px'; div.style.color = '#ccc'; };
+  div.appendChild(img);
+  div.onclick = () => {
+    const scr = document.getElementById('screen');
+    const wrap = document.createElement('span'); wrap.style.display = 'inline-block'; wrap.style.verticalAlign = 'middle';
+    const im = new Image(); im.style.height = '1em'; im.src = rec.mirrorUrl || rec.url;
+    im.onerror = () => { wrap.textContent = `[${rec.url.split('/').pop().slice(0, 2)}]`; wrap.style.color = '#ccc'; };
+    wrap.appendChild(im); scr.appendChild(wrap); scr.appendChild(document.createTextNode(' '));
+  };
+  box.appendChild(div);
+}
+function cleanupBlob() {
+  let dirty = false;
+  for (const latin in charTable) {
+    charTable[latin] = charTable[latin].filter(rec => {
+      const ok = rec.url.startsWith('data:') || rec.url.startsWith('http');
+      if (!ok) dirty = true;
+      return ok;
+    });
+    if (charTable[latin].length === 0) delete charTable[latin];
+  }
+  if (dirty) localStorage.setItem(LOCAL_CHAR_KEY, JSON.stringify(charTable));
+}
+
+/* ==================  本地存取  ================== */
+function loadLocalTable() {
+  try {
+    const raw = localStorage.getItem(LOCAL_CHAR_KEY);
+    if (raw) charTable = JSON.parse(raw);
+  } catch {
+    charTable = {};
+  }
+}
+function saveLocalTable() {
+  localStorage.setItem(LOCAL_CHAR_KEY, JSON.stringify(charTable));
+}
+
+/* ==================  同步：拉远程 + 合并  ================== */
+async function loadRemoteTable() {
+  status('同步远程字符表…');
+  try {
+    const { content } = await gh('GET', 'table.json');
+    const remoteTable = JSON.parse(atob(content));
+    for (const [latin, chars] of Object.entries(remoteTable)) {
+      if (!charTable[latin]) charTable[latin] = [];
+      const existing = new Set(charTable[latin].map(c => c.url));
+      const add = chars.filter(c => !existing.has(c.url));
+      charTable[latin].push(...add);
+    }
+    saveLocalTable();
+    status('远程同步完成');
+  } catch (e) {
+    if (e.message.includes('Not Found')) status('远程无表，使用本地');
+    else status('同步失败 ' + e.message);
+  }
+}
+
+/* ==================  键盘 & 状态  ================== */
+const LAYOUTS = {
+  qwerty: [
+    ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
+    ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'],
+    ['⇧', 'z', 'x', 'c', 'v', 'b', 'n', 'm', '⌫'],
+    ['123', '🎤', ' ', '⏎']
+  ],
+  digit: [
+    ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
+    ['-', '/', ':', ';', '(', ')', '$', '&', '@', '"'],
+    ['#+=', '.', ',', '?', '!', '\'', '⇧', '⌫'],
+    ['ABC', '🎤', ' ', '⏎']
+  ]
+};
+function renderKB() {
+  const kb = document.getElementById('keyboard');
+  kb.innerHTML = '';
+  const lay = layout === 'digit' ? LAYOUTS.digit : LAYOUTS.qwerty;
+  lay.forEach(row => {
+    const r = document.createElement('div'); r.className = 'row';
+    row.forEach(k => {
+      const key = document.createElement('div'); key.className = 'key'; key.textContent = k;
+      if (k === '⇧' || k === '123' || k === 'ABC' || k === '🎤' || k === '⏎' || k === '⌫' || k === '#+=') key.classList.add('fn');
+      if (k === '⇧' && shift) key.style.background = 'var(--theme)';
+      key.onclick = () => handleKey(k);
+      r.appendChild(key);
+    });
+    kb.appendChild(r);
+  });
+}
+function handleKey(k) {
+  const scr = document.getElementById('screen');
+  if (k === '⇧') { shift = !shift; renderKB(); return; }
+  if (k === '⌫') {
+    if (scr.lastChild) scr.removeChild(scr.lastChild);
+    return;
+  }
+  if (k === '⏎') { scr.appendChild(document.createElement('br')); return; }
+  if (k === '123') { layout = 'digit'; renderKB(); return; }
+  if (k === 'ABC') { layout = 'qwerty'; renderKB(); return; }
+  if (k === '🎤') { status('语音接口预留'); return; }
+  if (k === ' ') { scr.appendChild(document.createTextNode(' ')); return; }
+  const l = shift ? k.toUpperCase() : k;
+  scr.appendChild(document.createTextNode(l));
+  updateCand(l);
+  if (shift && !['⇧', '123', 'ABC'].includes(k)) { shift = false; renderKB(); }
+}
+function updateCand(l) {
+  const box = document.getElementById('candidate');
+  box.innerHTML = '';
+  const list = charTable[l] || [];
+  if (!list.length) { box.innerHTML = '<em style="color:#666">无候选</em>'; return; }
+  list.forEach(rec => {
+    const div = document.createElement('div'); div.className = 'cand-char';
+    const img = new Image(); img.style.height = '32px'; img.src = rec.mirrorUrl || rec.url;
+    img.onerror = () => { div.textContent = rec.url.split('/').pop().slice(0, 2); div.style.fontSize = '12px'; div.style.color = '#ccc'; };
+    div.appendChild(img);
+    div.onclick = () => {
+      const scr = document.getElementById('screen');
+      const wrap = document.createElement('span'); wrap.style.display = 'inline-block'; wrap.style.verticalAlign = 'middle';
+      const im = new Image(); im.style.height = '1em'; im.src = rec.mirrorUrl || rec.url;
+      im.onerror = () => { wrap.textContent = `[${rec.url.split('/').pop().slice(0, 2)}]`; wrap.style.color = '#ccc'; };
+      wrap.appendChild(im); scr.appendChild(wrap); scr.appendChild(document.createTextNode(' '));
+    };
+    box.appendChild(div);
+  });
+}
+function bindIME() {
+  const scr = document.getElementById('screen');
+  let timer;
+  scr.addEventListener('touchstart', e => {
+    timer = setTimeout(() => { openDraw(); e.preventDefault(); }, 500);
+  });
+  scr.addEventListener('touchend', () => clearTimeout(timer));
+  scr.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.ctrlKey) { e.preventDefault(); scr.appendChild(document.createElement('br')); }
+  });
+}
+function status(msg) {
+  const s = document.getElementById('status');
+  s.textContent = msg;
+  clearTimeout(s.timer);
+  s.timer = setTimeout(() => s.textContent = '就绪', 3000);
+}
+</script>
+</body>
+</html>
